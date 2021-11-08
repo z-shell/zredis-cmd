@@ -1,0 +1,64 @@
+# -*- Mode: sh; sh-indentation: 4; indent-tabs-mode: nil; sh-basic-offset: 4; -*-
+# vim:ft=zsh:sw=4:sts=4:et
+#
+
+setopt localoptions extendedglob typesetsilent warncreateglobal
+
+local -A opthash
+typeset -g REPLY=""
+
+# Set up `reply' type
+local tpe="${ZREDIS_CMD[queue_${1}_val_type]}"  # read to have the value handy
+[[ "$tpe" = (#i)(hash|zset) ]] && typeset -gA reply || typeset -ga reply
+reply=()
+
+# The variable/data household, an operational-"database" hash
+typeset -gA ZREDIS_CMD
+
+zparseopts -E -D -A opthash h -help v -verbose q -quiet a -no-ansi n || \
+          { print -r -- "Improper options given, see help (-h/--help)"; return 1; }
+
+(( ${+opthash[-h]} + ${+opthash[--help]} ))     && local OPT_HELP="-h"
+(( ${+opthash[-v]} + ${+opthash[--verbose]} ))  && local OPT_VERBOSE="-v"
+(( ${+opthash[-q]} + ${+opthash[--quiet]} ))    && local OPT_QUIET="-q"
+(( ${+opthash[-a]} + ${+opthash[--no-ansi]} ))  && local OPT_NO_ANSI="-a"
+
+local name="$1" key1 value1_var_name key2 flag2_var_name
+[[ -z "$name" ]] && { print -r -- "Name of the atom-string parameter needed as first argument, see -h/--help"; return 1; }
+
+# Clear cache of the value-holder
+key1="queue_${name}_sink"
+value1_var_name="${ZREDIS_CMD[$key1]}"
+[[ "$tpe" != (#i)(hash|zset) ]] && ztclear "$value1_var_name"
+
+# Clear cache of the accompanying flag-holder
+key2="queue_${name}_flag_idx"
+flag2_var_name="${ZREDIS_CMD[$key2]}"
+[[ "$tpe" != (#i)(hash|zset) ]] && ztclear "$flag2_var_name"
+
+# Prepare the local copy of the flag-holder
+# Unused, 0 and 1 are being used directly, to
+# allow dynamic change of direction of the
+# 1-element queue.
+# Just read the value, there's no indirection
+# value3="${ZREDIS_CMD[queue_${name}_val_flag_idx]}"
+
+# (1), i.e. value1_var_name - the value, (2), i.e. flag2_var_name - flag
+if [[ "${(P)flag2_var_name:-0}" != "0" ]]; then
+    if [[ "$tpe" = (#i)string ]]; then
+        REPLY="${(P)value1_var_name}"
+    elif [[ "$tpe" = (#i)(list|set) ]]; then
+        reply=( "${(@P)value1_var_name}" )
+    elif [[ "$tpe" = (#i)(hash|zset) ]]; then
+        reply=( "${(@kv)${(@Pkv)value1_var_name}}" )
+    else
+        print -r -- "Unrecognized type \`$tpe', aborting"
+        return 2
+    fi
+    : ${(P)flag2_var_name::=0}
+    [[ -z "$OPT_QUIET" ]] && print -r -- "atom-oe-get: OK, read new elements"
+    return 0
+else
+    [[ -z "$OPT_QUIET" ]] && print -r -- "atom-oe-get: the queue is empty"
+    return 1
+fi

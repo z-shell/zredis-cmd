@@ -1,0 +1,74 @@
+# -*- Mode: sh; sh-indentation: 4; indent-tabs-mode: nil; sh-basic-offset: 4; -*-
+# vim:ft=zsh:sw=4:sts=4:et
+#
+# Stores the given value into the atomic-string.
+# Basically, if flag == 0, then there's room and a value can be stored.
+# If flag == 1, then a value is ready for retrieval. Whichever party
+# will make use of the flag, either storing or getting the value, its
+# gonna succeed (if the 1-element queue will be full empty, as expected).
+
+setopt localoptions extendedglob typesetsilent warncreateglobal
+
+local -A opthash
+# The variable/data household, an operational-"database" hash
+typeset -gA ZREDIS_CMD
+
+zparseopts -E -D -A opthash h -help v -verbose q -quiet a -no-ansi n || \
+          { print -r -- "Improper options given, see help (-h/--help)"; return 1; }
+
+(( ${+opthash[-h]} + ${+opthash[--help]} ))     && local OPT_HELP="-h"
+(( ${+opthash[-v]} + ${+opthash[--verbose]} ))  && local OPT_VERBOSE="-v"
+(( ${+opthash[-q]} + ${+opthash[--quiet]} ))    && local OPT_QUIET="-q"
+(( ${+opthash[-a]} + ${+opthash[--no-ansi]} ))  && local OPT_NO_ANSI="-a"
+
+local name="$1" tpe value1_var_name flag2_var_name next_write3_var_name
+[[ -z "$name" ]] && { print -r -- "Name of the atom-string parameter needed, see -h/--help"; return 1; }
+
+# Read to have the value handy
+tpe="${ZREDIS_CMD[queue_${name}_val_type]}"
+[[ -z "$tpe" ]] && { print -r -- "The ME queue \`$1' isn't setup, see atom-me-setup -h, aborting..."; return 1; }
+
+# Decide on $val form (type)
+if [[ "$tpe" = (#i)(hash|zset) && "$2" = "[" ]]; then
+    local -a val
+    val=( "${@[3,-1]}" )
+    [[ "${val[-1]}" = "]" ]] && val[-1]=()
+elif [[ "$tpe" = (#i)(hash|zset) ]]; then
+    local -a val
+    [[ -z "$2" ]] && { print "No value to send given, aborting..."; return 3; }
+    [[ 1 -ne "${(P)+2}" ]] && { print "The data-to-send variable \`$2' doesn't exist, aborting..."; return 4; }
+    val=( "${(kv@)${(Pkv@)2}}" )
+else
+    print -r -- "Unrecognized or forbidden type of ME queue: $tpe"
+    print -r -- "Allowed are: \`hash' and \`zset'"
+    return 5
+fi
+local next_write3_var_name="${ZREDIS_CMD[queue_${name}_val_next_write_prefix]}${name}"
+local idx="${(P)next_write3_var_name:-1}"
+
+local single_value stored=0 error=0
+
+# value1 - the value, flag2 - flag
+for single_value in "${val[@]}"; do
+    value1_var_name="${ZREDIS_CMD[queue_${name}_val_prefix]}${name}[$idx]"
+    flag2_var_name="${ZREDIS_CMD[queue_${name}_val_flag_prefix]}${name}[$idx]"
+
+    ztclear "${ZREDIS_CMD[queue_${name}_val_prefix]}${name}" "$idx"
+    ztclear "${ZREDIS_CMD[queue_${name}_val_flag_prefix]}${name}" "$idx"
+
+    if [[ "${(P)flag2_var_name:-0}" = 0## ]]; then
+        stored=1
+        : ${(P)value1_var_name::=$single_value}
+        : ${(P)flag2_var_name::=1}
+        (( ++ idx ))
+        : ${(P)next_write3_var_name::=$idx}
+    else
+        (( error )) || print "atom-me-push: queue is full, skipping data"
+        error=1
+        continue
+    fi
+done
+
+[[ -z "$OPT_QUIET" && "$stored" -eq 1 ]] && print -r -- "atom-me-push: OK data sent"
+
+return $error

@@ -1,0 +1,27 @@
+# -*- Mode: sh; sh-indentation: 4; indent-tabs-mode: nil; sh-basic-offset: 4; -*-
+# vim:ft=zsh:sw=4:sts=4:et
+
+
+zparseopts -E -D -A opthash h -help v -verbose q -quiet a -no-ansi n p: P: \
+           s: -sink: i -init t: -type: || \
+               { print -r -- "Improper option(s) given, see help (-h/--help)"; return 1; }
+
+(( ${+opthash[-h]} + ${+opthash[--help]} ))     && local OPT_HELP="-h"
+(( ${+opthash[-v]} + ${+opthash[--verbose]} ))  && local OPT_VERBOSE="-v"
+(( ${+opthash[-q]} + ${+opthash[--quiet]} ))    && local OPT_QUIET="-q"
+(( ${+opthash[-a]} + ${+opthash[--no-ansi]} ))  && local OPT_NO_ANSI="-a"
+(( ${+opthash[-p]} ))                           && local OPT_PASSWORD="${opthash[-p]}"
+(( ${+opthash[-P]} ))                           && local OPT_PASSWORD_FILE="${opthash[-P]}"
+(( ${+opthash[-s]} + ${+opthash[--sink]} ))     && local OPT_SINK="${opthash[-s]}${opthash[--sink]}"
+(( ${+opthash[-i]} + ${+opthash[--init]} ))     && local OPT_INIT="-i"
+(( ${+opthash[-t]} + ${+opthash[--type]} ))     && local OPT_TYPE="${opthash[-t]}${opthash[--type]}"
+
+local third_type
+if [[ "$#" = 3 ]]; then
+    third_type="$3"
+    set -- "${@[1,-2]}"
+fi
+
+@atom-setup-facade ${=${=${=OPT_TYPE:+--type $OPT_TYPE}:---type $third_type}:---type error} "$@"
+
+return $?

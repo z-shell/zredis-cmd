@@ -1,0 +1,106 @@
+# -*- Mode: sh; sh-indentation: 4; indent-tabs-mode: nil; sh-basic-offset: 4; -*-
+# vim:ft=zsh:sw=4:sts=4:et
+
+setopt localoptions extendedglob typesetsilent warncreateglobal
+
+local -A opthash
+# The variable/data household, an operational-"database" hash
+typeset -gA ZREDIS_CMD
+
+zparseopts -E -D -A opthash h -help v -verbose q -quiet a -no-ansi n p: P: \
+            s: -sink: i -init t: -type: || \
+                { print -r -- "Improper options given, see help (-h/--help)"; return 1; }
+
+(( ${+opthash[-h]} + ${+opthash[--help]} ))     && local OPT_HELP="-h"
+(( ${+opthash[-v]} + ${+opthash[--verbose]} ))  && local OPT_VERBOSE="-v"
+(( ${+opthash[-q]} + ${+opthash[--quiet]} ))    && local OPT_QUIET="-q"
+(( ${+opthash[-a]} + ${+opthash[--no-ansi]} ))  && local OPT_NO_ANSI="-a"
+(( ${+opthash[-p]} ))                           && local OPT_PASSWORD="${opthash[-p]}"
+(( ${+opthash[-P]} ))                           && local OPT_PASSWORD_FILE="${opthash[-P]}"
+(( ${+opthash[-s]} + ${+opthash[--sink]} ))     && local OPT_SINK="${opthash[-s]}${opthash[--sink]}"
+(( ${+opthash[-i]} + ${+opthash[--init]} ))     && local OPT_INIT="-i"
+(( ${+opthash[-t]} + ${+opthash[--type]} ))     && local OPT_TYPE="${(L)opthash[-t]}${(L)opthash[--type]}"
+
+local name="$1" address="$2"
+
+[[ -z "$name" ]] && { print -r -- "zr-cmd ME backend: Argument required, see -h/--help"; return 2; }
+address="${address:-$DEFAULT_ATSTR_ADDRESS}"
+[[ -z "$address" ]] && { print -r -- "zr-cmd ME backend: Error: aborting, no address given (the optional second argument, see -h/--help)"; return 3; }
+# Currently supporting `hash' (i.e. HSET) redis-db key-type
+[[ -z "$OPT_TYPE" ]] && local OPT_TYPE="hash"
+[[ "$OPT_TYPE" != "hash" ]] && { print -r -- "zr-cmd ME backend: Error: improper type given, allowed are: hash"; return 5; }
+
+# Make sure the address points to a database
+[[ "${address#*/}" = "$address" ]] && address="${address}/${DEFAULT_ATSTR_DB:-7}";
+
+# Type and prefixes for tied variables (four)
+ZREDIS_CMD[queue_${name}_val_type]="${(U)OPT_TYPE}"                        # type
+ZREDIS_CMD[queue_${name}_val_prefix]="zr__"                                # var name prefix for the main var
+ZREDIS_CMD[queue_${name}_val_flag_prefix]="zr_flags__"                     # var name prefix for flags
+ZREDIS_CMD[queue_${name}_val_next_read_prefix]="zr_next_read__"            # var name prefix for next-read
+ZREDIS_CMD[queue_${name}_val_next_write_prefix]="zr_next_write__"          # var name prefix for next-read
+# Redis-db fields names
+ZREDIS_CMD[queue_${name}_sink]="zredis_${OPT_SINK:-$name}_sink"                        # name of the sink, i.e. of the data-field name in redis-db
+ZREDIS_CMD[queue_${name}_flag_idx]="zredis_${OPT_SINK:-$name}_flags"       # name of the flag, i.e. the flag-field on redis-db side
+ZREDIS_CMD[queue_${name}_next_read]="zredis_${OPT_SINK:-$name}_read_idx"   # current on-reader-side value of the flag/idx
+ZREDIS_CMD[queue_${name}_next_write]="zredis_${OPT_SINK:-$name}_write_idx" # current on-writer-side value of the flag/idx
+
+# Prepare password options
+local -a password
+password=( ${${=OPT_PASSWORD:+-p $OPT_PASSWORD}:-${=OPT_PASSWORD_FILE:+-P $OPT_PASSWORD_FILE}} )
+
+@atom-untie-if-tied "${ZREDIS_CMD[queue_${name}_val_prefix]}$name" \
+                    "${ZREDIS_CMD[queue_${name}_val_flag_prefix]}$name" \
+                    "${ZREDIS_CMD[queue_${name}_val_next_read_prefix]}$name" \
+                    "${ZREDIS_CMD[queue_${name}_val_next_write_prefix]}$name"
+#[[ "$OPT_TYPE" = (#i)(hash|zset) ]] && local zero_cache="-z" || local zero_cache=""
+ztie -d db/redis -f "${address}/${ZREDIS_CMD[queue_${name}_sink]}" "${password[@]}" -SL "$OPT_TYPE" "${ZREDIS_CMD[queue_${name}_val_prefix]}$name"
+ztie -d db/redis -f "${address}/${ZREDIS_CMD[queue_${name}_flag_idx]}" "${password[@]}" -SL "$OPT_TYPE" "${ZREDIS_CMD[queue_${name}_val_flag_prefix]}$name"
+ztie -d db/redis -f "${address}/${ZREDIS_CMD[queue_${name}_next_read]}" "${password[@]}" -SL string "${ZREDIS_CMD[queue_${name}_val_next_read_prefix]}$name"
+ztie -d db/redis -f "${address}/${ZREDIS_CMD[queue_${name}_next_write]}" "${password[@]}" -SL string "${ZREDIS_CMD[queue_${name}_val_next_write_prefix]}$name"
+
+local -A var_to_value
+var_to_value=(
+    "${ZREDIS_CMD[queue_${name}_val_prefix]}$name" ""
+    "${ZREDIS_CMD[queue_${name}_val_flag_prefix]}$name" ""
+    "${ZREDIS_CMD[queue_${name}_val_next_read_prefix]}$name" "1"
+    "${ZREDIS_CMD[queue_${name}_val_next_write_prefix]}$name" "1"
+)
+
+local output="" nam filename val
+for nam in "${ZREDIS_CMD[queue_${name}_val_prefix]}$name" \
+        "${ZREDIS_CMD[queue_${name}_val_flag_prefix]}$name" \
+        "${ZREDIS_CMD[queue_${name}_val_next_read_prefix]}$name" \
+        "${ZREDIS_CMD[queue_${name}_val_next_write_prefix]}$name"
+do
+    filename=$( mktemp -t ZshAtomicString.XXX )
+    if [[ -n "$OPT_INIT" ]]; then
+        if [[ "${(Pt)nam}" = *association* ]]; then
+            { : ${(PAA)nam::=${=var_to_value[$nam]}}; } >"$filename" 2>&1
+        elif [[ "${(Pt)nam}" = *array* ]]; then
+            { : ${(PA)nam::=${=var_to_value[$nam]}}; } >"$filename" 2>&1
+        else
+            { : ${(P)nam::=${var_to_value[$nam]}}; } >"$filename" 2>&1
+        fi
+    else
+        if [[ "${(Pt)nam}" = *association* ]]; then
+            nam="${nam}[empty]"
+            { val="${(P)nam}"; } >"$filename" 2>&1
+        else
+            { val="${(P)nam}"; } >"$filename" 2>&1
+        fi
+    fi
+    IFS=$'\n' read nam < "$filename"; output+="$nam"
+    command rm -f "$filename"
+done
+
+# Initialize the next-data pointer
+[[ -n "$OPT_INIT" ]] && ZREDIS_CMD[queue_${name}_val_next_idx]=1
+
+[[ "$output" = (#i)*error* ]] && {
+    print -r -- "Warning: error occured (aborting, 1): ${(M)output%error*}"
+    @atom-untie-if-tied "${ZREDIS_CMD[queue_${name}_val_prefix]}$name" \
+                    "${ZREDIS_CMD[queue_${name}_val_flag_prefix]}$name" \
+                    "${ZREDIS_CMD[queue_${name}_val_next_read_prefix]}$name" \
+                    "${ZREDIS_CMD[queue_${name}_val_next_write_prefix]}$name"
+}

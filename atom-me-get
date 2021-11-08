@@ -1,0 +1,59 @@
+# -*- Mode: sh; sh-indentation: 4; indent-tabs-mode: nil; sh-basic-offset: 4; -*-
+# vim:ft=zsh:sw=4:sts=4:et
+#
+
+setopt localoptions extendedglob typesetsilent warncreateglobal
+
+local -A opthash
+typeset -g REPLY=""
+
+# Uneeded, but left for future functionality
+local tpe="${ZREDIS_CMD[queue_${1}_val_type]}"  # read to have the value handy
+[[ -z "$tpe" ]] && { print -r -- "The ME queue \`$1' isn't setup, see atom-me-setup -h, aborting..."; return 1; }
+[[ "$tpe" = (#i)(hash|zset) ]] && typeset -ga reply
+reply=()
+
+# The variable/data household, an operational-"database" hash
+typeset -gA ZREDIS_CMD
+
+zparseopts -E -D -A opthash h -help v -verbose q -quiet a -no-ansi n || \
+          { print -r -- "Improper options given, see help (-h/--help)"; return 2; }
+
+(( ${+opthash[-h]} + ${+opthash[--help]} ))     && local OPT_HELP="-h"
+(( ${+opthash[-v]} + ${+opthash[--verbose]} ))  && local OPT_VERBOSE="-v"
+(( ${+opthash[-q]} + ${+opthash[--quiet]} ))    && local OPT_QUIET="-q"
+(( ${+opthash[-a]} + ${+opthash[--no-ansi]} ))  && local OPT_NO_ANSI="-a"
+
+local name="$1" value1_var_name flag2_var_name read=0 error=0
+[[ -z "$name" ]] && { print -r -- "Name of the atom-parameter to create is needed, see -h/--help"; return 3; }
+
+local next_read3_var_name="${ZREDIS_CMD[queue_${name}_val_next_read_prefix]}${name}" idx
+
+while (( 1 )); do
+    # value1 - the value, flag2 - flag
+    ztclear "$next_read3_var_name"
+    idx="${(P)next_read3_var_name:-1}"
+
+    value1_var_name="${ZREDIS_CMD[queue_${name}_val_prefix]}${name}[$idx]"
+    flag2_var_name="${ZREDIS_CMD[queue_${name}_val_flag_prefix]}${name}[$idx]"
+
+    ztclear "${ZREDIS_CMD[queue_${name}_val_prefix]}${name}" "$idx"
+    ztclear "${ZREDIS_CMD[queue_${name}_val_flag_prefix]}${name}" "$idx"
+
+    # (1), i.e. value1_var_name - the value, (2), i.e. flag2_var_name - flag
+    if [[ "${(P)flag2_var_name:-0}" != 0## ]]; then
+        read=1
+        reply+=( "${(P)value1_var_name}" )
+        : ${(P)flag2_var_name::=0}
+
+        (( ++ idx ))
+        : ${(P)next_read3_var_name::=$idx}
+    else
+        (( error )) || (( read )) || { [[ -z "$OPT_QUIET" ]] && print "atom-me-get: the queue is empty"; error=10; }
+        break
+    fi
+done
+
+[[ -z "$OPT_QUIET" && "$read" -eq "1" ]] && print -r -- "atom-me-get: OK, read new elements"
+
+return $error

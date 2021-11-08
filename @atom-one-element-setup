@@ -1,0 +1,68 @@
+# -*- Mode: sh; sh-indentation: 4; indent-tabs-mode: nil; sh-basic-offset: 4; -*-
+# vim:ft=zsh:sw=4:sts=4:et
+
+setopt localoptions extendedglob typesetsilent warncreateglobal
+
+local -A opthash
+# The variable/data household, an operational-"database" hash
+typeset -gA ZREDIS_CMD
+
+zparseopts -E -D -A opthash h -help v -verbose q -quiet a -no-ansi n p: P: \
+            s: -sink: i -init t: -type: || \
+                { print -r -- "Improper options given, see help (-h/--help)"; return 1; }
+
+(( ${+opthash[-h]} + ${+opthash[--help]} ))     && local OPT_HELP="-h"
+(( ${+opthash[-v]} + ${+opthash[--verbose]} ))  && local OPT_VERBOSE="-v"
+(( ${+opthash[-q]} + ${+opthash[--quiet]} ))    && local OPT_QUIET="-q"
+(( ${+opthash[-a]} + ${+opthash[--no-ansi]} ))  && local OPT_NO_ANSI="-a"
+(( ${+opthash[-p]} ))                           && local OPT_PASSWORD="${opthash[-p]}"
+(( ${+opthash[-P]} ))                           && local OPT_PASSWORD_FILE="${opthash[-P]}"
+(( ${+opthash[-s]} + ${+opthash[--sink]} ))     && local OPT_SINK="${opthash[-s]}${opthash[--sink]}"
+(( ${+opthash[-i]} + ${+opthash[--init]} ))     && local OPT_INIT="-i"
+(( ${+opthash[-t]} + ${+opthash[--type]} ))     && local OPT_TYPE="${(L)opthash[-t]}${(L)opthash[--type]}"
+
+local name="$1" address="$2"
+
+[[ -z "$name" ]] && { print -r -- "zr-cmd OE backend: Argument required, see atstr_setup -h/--help"; return 2; }
+address="${address:-$DEFAULT_ATSTR_ADDRESS}"
+[[ -z "$address" ]] && { print -r -- "zr-cmd OE backend: Error: aborting, no address given (optional second argument, see -h/--help)"; return 3; }
+[[ -z "$OPT_TYPE" ]] && { print -r -- "zr-cmd OE backend: Error: no type of atomic-variable given"; return 4; }
+[[ -n "${OPT_TYPE:#(string|set|zset|hash|list)}" ]] && { print -r -- "zr-cmd OE backend: Error: improper type given, allowed are: string,set,zset,hash,list"; return 5; }
+
+# Make sure the address points to a database
+[[ "${address#*/}" = "$address" ]] && address="${address}/${DEFAULT_ATSTR_DB:-7}";
+
+# Fill "entry-form" for the new atomic-string that's being setup
+ZREDIS_CMD[queue_${name}_val_type]="${(U)OPT_TYPE}"              # type
+ZREDIS_CMD[queue_${name}_val_flag_idx]="0"                       # current on-our-side value of the flag
+ZREDIS_CMD[queue_${name}_sink]="${OPT_SINK:-$name}"              # name of the sink, i.e. of the data-field name in redis db
+ZREDIS_CMD[queue_${name}_flag_idx]="flag_idx_${OPT_SINK:-$name}" # name of the flag, i.e. the flag-field on redis db side
+
+# Prepare password options
+local -a password
+password=( ${${=OPT_PASSWORD:+-p $OPT_PASSWORD}:-${=OPT_PASSWORD_FILE:+-P $OPT_PASSWORD_FILE}} )
+
+@atom-untie-if-tied "$name" "flag_idx_$name"
+[[ "$OPT_TYPE" = (#i)(hash|zset) ]] && local zero_cache="-z" || local zero_cache=""
+ztie -d db/redis $zero_cache -f "${address}/${ZREDIS_CMD[queue_${name}_sink]}" "${password[@]}" -SL "$OPT_TYPE" "$name"
+ztie -d db/redis $zero_cache -f "${address}/${ZREDIS_CMD[queue_${name}_flag_idx]}" "${password[@]}" -SL string flag_idx_${name}
+
+local -A var_to_value
+var_to_value=( "$name" "" "flag_idx_$name" 0 )
+
+local output="" nam filename
+for nam in "$name" "flag_idx_$name"; do
+    filename=$( mktemp -t ZshAtomicString.XXX )
+    if [[ -n "$OPT_INIT" ]]; then
+        { : ${(P)nam::=${var_to_value[$nam]}}; } >"$filename" 2>&1
+    else
+        { val=${(P)nam}; } >"$filename" 2>&1
+    fi
+    IFS=$'\n' read nam < "$filename"; output+="$nam"
+    command rm -f "$filename"
+done
+
+[[ "$output" = (#i)*error* ]] && {
+    print -r -- "Warning: error occured (1): ${(M)output%error*}"
+    @atstr_untie_if_tied "$name" "flag_idx_$name"
+}

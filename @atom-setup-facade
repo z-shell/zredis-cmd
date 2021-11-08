@@ -1,0 +1,38 @@
+# -*- Mode: sh; sh-indentation: 4; indent-tabs-mode: nil; sh-basic-offset: 4; -*-
+# vim:ft=zsh:sw=4:sts=4:et
+
+setopt localoptions extendedglob typesetsilent warncreateglobal
+
+local -A opthash
+local REPLY
+# The variable/data household, an operational-"database" hash
+typeset -gA ZREDIS_CMD
+
+zparseopts -E -D -A opthash h -help v -verbose q -quiet a -no-ansi n p: P: \
+           s: -sink: i -init t: -type: || \
+               { print -r -- "Improper option(s) given, see help (-h/--help)"; return 1; }
+
+(( ${+opthash[-h]} + ${+opthash[--help]} ))     && local OPT_HELP="-h"
+(( ${+opthash[-v]} + ${+opthash[--verbose]} ))  && local OPT_VERBOSE="-v"
+(( ${+opthash[-q]} + ${+opthash[--quiet]} ))    && local OPT_QUIET="-q"
+(( ${+opthash[-a]} + ${+opthash[--no-ansi]} ))  && local OPT_NO_ANSI="-a"
+(( ${+opthash[-p]} ))                           && local OPT_PASSWORD="${opthash[-p]}"
+(( ${+opthash[-P]} ))                           && local OPT_PASSWORD_FILE="${opthash[-P]}"
+(( ${+opthash[-s]} + ${+opthash[--sink]} ))     && local OPT_SINK="${opthash[-s]}${opthash[--sink]}"
+(( ${+opthash[-i]} + ${+opthash[--init]} ))     && local OPT_INIT="-i"
+(( ${+opthash[-t]} + ${+opthash[--type]} ))     && local OPT_TYPE="${opthash[-t]}${opthash[--type]}"
+
+local name="$1" address="$2"
+
+[[ -z "$name" ]] && { print "Argument required, see -h/--help"; return 2; }
+address="${address:-$DEFAULT_ATSTR_ADDRESS}"
+[[ -z "$address" ]] && { print -r -- "Error: aborting, no address given (optional second argument, see -h/--help)"; return 3; }
+
+local -a password
+password=( ${${=OPT_PASSWORD:+-p $OPT_PASSWORD}:-${=OPT_PASSWORD_FILE:+-P $OPT_PASSWORD_FILE}} )
+
+@atom-one-element-setup $OPT_HELP $OPT_VERBOSE $OPT_QUIET $OPT_NO_ANSI \
+                        "${password[@]}" ${=OPT_SINK:+-s $OPT_SINK} $OPT_INIT --type "$OPT_TYPE" \
+                        "$name" "$address"
+
+return $?

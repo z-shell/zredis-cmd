@@ -1,0 +1,86 @@
+# -*- Mode: sh; sh-indentation: 4; indent-tabs-mode: nil; sh-basic-offset: 4; -*-
+# vim:ft=zsh:sw=4:sts=4:et
+#
+# Stores the given value into the atomic-string.
+# Basically, if flag == 0, then there's room and a value can be stored.
+# If flag == 1, then a value is ready for retrieval. Whichever party
+# will make use of the flag, either storing or getting the value, its
+# gonna succeed (if the 1-element queue will be full empty, as expected).
+
+setopt localoptions extendedglob typesetsilent warncreateglobal
+
+local -A opthash
+# The variable/data household, an operational-"database" hash
+typeset -gA ZREDIS_CMD
+
+zparseopts -E -D -A opthash h -help v -verbose q -quiet a -no-ansi n || \
+          { print -r -- "Improper options given, see help (-h/--help)"; return 1; }
+
+(( ${+opthash[-h]} + ${+opthash[--help]} ))     && local OPT_HELP="-h"
+(( ${+opthash[-v]} + ${+opthash[--verbose]} ))  && local OPT_VERBOSE="-v"
+(( ${+opthash[-q]} + ${+opthash[--quiet]} ))    && local OPT_QUIET="-q"
+(( ${+opthash[-a]} + ${+opthash[--no-ansi]} ))  && local OPT_NO_ANSI="-a"
+
+local name="$1" tpe key1 value1_var_name key2 flag2_var_name
+[[ -z "$name" ]] && { print -r -- "Name of the atom parameter needed, see -h/--help"; return 1; }
+
+# Read to have the value handy
+tpe="${ZREDIS_CMD[queue_${name}_val_type]}"
+
+# Decide on $val form (type)
+if [[ "$tpe" = (#i)(list|set|hash|zset) && "$2" = "[" ]]; then
+    local -a val
+    val=( "${@[3,-1]}" )
+    [[ "${val[-1]}" = "]" ]] && val[-1]=()
+    if [[ "$tpe" = (#i)(hash|zset) ]]; then
+        if (( ${#val} % 2 )); then
+            print "Error: uneven number of elements given for hash, aborting.."
+            return 2
+        fi
+    fi
+elif [[ "$tpe" = (#i)(list|set) ]]; then
+    local -a val
+    [[ -z "$2" ]] && { print "No value to send (\"push\") given, aborting..."; return 3; }
+    [[ 1 -ne "${(P)+2}" ]] && { print "The data-to-send variable \`$2' doesn't exist, aborting..."; return 4; }
+    val=( "${(@P)2}" )
+elif [[ "$tpe" = (#i)string ]]; then
+    local val
+    val="$2"
+else
+    print -rn -- "Unrecognized type of the queue: $tpe"
+    return 5
+fi
+
+# Clear cache of the value-holder
+key1="queue_${name}_sink"
+value1_var_name="${ZREDIS_CMD[$key1]}"
+[[ "$tpe" != (#i)(hash|zset) ]] && ztclear "$value1_var_name"
+
+# Clear cache of the accompanying flag-holder
+key2="queue_${name}_flag_idx"
+flag2_var_name="${ZREDIS_CMD[$key2]}"
+[[ "$tpe" != (#i)(hash|zset) ]] && ztclear "$flag2_var_name"
+
+# Prepare the local copy of the flag-holder
+# Unused, 0 and 1 are being used directly, to
+# allow dynamic change of direction of the
+# 1-element queue.
+# Just read the value, there's no indirection
+# value3="${ZREDIS_CMD[queue_${name}_val_flag_idx]}"
+
+# value1 - the value, flag2 - flag
+if [[ "${(P)flag2_var_name:-0}" = "0" ]]; then
+    if [[ "$tpe" = (#i)string ]]; then
+        : ${(P)value1_var_name::=$val}
+    elif [[ "$tpe" = (#i)(list|set) ]]; then
+        : ${(PA)value1_var_name::=${val[@]}}
+    elif [[ "$tpe" = (#i)(hash|zset) ]]; then
+        : ${(PAA)value1_var_name::=${val[@]}}
+    fi
+    : ${(P)flag2_var_name::=1}
+    [[ -z "$OPT_QUIET" ]] && print -r -- "atom-me-push: OK data sent"
+    return 0
+else
+    [[ -z "$OPT_QUIET" ]] && print -r -- "atom-me-push: queue is full, skipping sending data"
+    return 1
+fi
